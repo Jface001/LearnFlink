@@ -3,6 +3,8 @@ package com.test.flink.order.report;
 import com.alibaba.fastjson.JSON;
 import lombok.*;
 import org.apache.commons.lang3.time.FastDateFormat;
+import org.apache.flink.api.common.functions.AggregateFunction;
+import org.apache.flink.api.common.functions.RichAggregateFunction;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
@@ -25,6 +27,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
 import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
@@ -246,7 +249,7 @@ public class _07_02RealTimeDailyOrderReport {
                     }
                 }
         )
-                //b. 提前字段：订单金额和添加字段：全国,二元组
+                //b. 提取字段：订单金额和添加字段：全国,二元组
                 .map(new RichMapFunction<OrderData, Tuple2<String, BigDecimal>>() {
                     @Override
                     public Tuple2<String, BigDecimal> map(OrderData order) throws Exception {
@@ -257,7 +260,7 @@ public class _07_02RealTimeDailyOrderReport {
                 //c. 分组，设置窗口、触发器，做聚合
                 .keyBy(0)
                 .window(TumblingEventTimeWindows.of(Time.days(1), Time.hours(-8)))
-                .trigger(ContinuousProcessingTimeTrigger.of(Time.seconds(1)))
+                .trigger(ContinuousProcessingTimeTrigger.of(Time.seconds(5)))
                 .apply(new RichWindowFunction<Tuple2<String, BigDecimal>, OrderReport, Tuple, TimeWindow>() {
                     FastDateFormat format = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss");
 
@@ -270,11 +273,11 @@ public class _07_02RealTimeDailyOrderReport {
                         long start = window.getStart();
                         long end = window.getEnd();
                         String winStart = this.format.format(start);
-                        String winEnd = this.format.format(start);
+                        String winEnd = this.format.format(end);
                         //c. 遍历窗口数据进行累加
-                        BigDecimal total = new BigDecimal(0.0).setScale(2, BigDecimal.ROUND_HALF_UP);
+                        BigDecimal total = new BigDecimal(0.0).setScale(2, RoundingMode.HALF_UP);
                         for (Tuple2<String, BigDecimal> item : input) {
-                            total.add(item.f1);
+                            total = total.add(item.f1);
                         }
                         double totalMount = total.doubleValue();
                         //d. 封装成 OrderReport 对象输出
@@ -285,58 +288,134 @@ public class _07_02RealTimeDailyOrderReport {
         return resultStream;
     }
 
-
     /**
-     * 6.实时报表统计：每日各省份销售额
+     * 6.实时报表统计：每日统计全国销售总额
+     * 优化版：优化计算中间结果，避免重复计算
      *
      * @param stream 清洗过后的数据流
-     * @return 返回一个二元组，包含统计类型和总金额
+     * @return 返回一个数据流
      */
+    private static DataStream<OrderReport> reportDailyIncrementmalGlobal(DataStream<OrderData> stream) {
+        //a. 设置事件时间字段，类型为 Long，允许最大乱序时间为 2 秒
+        SingleOutputStreamOperator<OrderReport> resultStream = stream.assignTimestampsAndWatermarks(
+                new BoundedOutOfOrdernessTimestampExtractor<OrderData>(Time.seconds(2)) {
+                    private FastDateFormat format = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss.SSS");
 
+                    @Override
+                    public long extractTimestamp(OrderData order) {
+                        String orderTime = order.getOrderTime();
+                        Long timeStamp = System.currentTimeMillis();
+                        try {
+                            timeStamp = format.parse(orderTime).getTime();
+                        } catch (ParseException e) {
+                            e.printStackTrace();
+                        }
+                        return timeStamp;
+                    }
+                }
+        )
+                //b. 提取字段：订单金额和添加字段：全国,二元组
+                .map(new RichMapFunction<OrderData, Tuple2<String, BigDecimal>>() {
+                    @Override
+                    public Tuple2<String, BigDecimal> map(OrderData order) throws Exception {
+                        BigDecimal orderAmt = order.getOrderAmt();
+                        return Tuple2.of("全国", orderAmt);
+                    }
+                })
+                //c. 分组，设置窗口、触发器，做聚合
+                .keyBy(0)
+                .window(TumblingEventTimeWindows.of(Time.days(1), Time.hours(-8)))
+                .trigger(ContinuousProcessingTimeTrigger.of(Time.seconds(5)))
+                .aggregate(new AggregateFunction<Tuple2<String, BigDecimal>, BigDecimal, BigDecimal>() {
+                               //增加聚合时，存储中间结果值初始化
+                               @Override
+                               public BigDecimal createAccumulator() {
+                                   return new BigDecimal(0.0).setScale(2, BigDecimal.ROUND_HALF_UP);
+                               }
+
+                               //累加器，中间结果
+                               @Override
+                               public BigDecimal add(Tuple2<String, BigDecimal> value, BigDecimal accumulator) {
+                                   return accumulator.add(value.f1);
+                               }
+
+                               //计算方式
+                               @Override
+                               public BigDecimal merge(BigDecimal a, BigDecimal b) {
+                                   return a.add(b);
+                               }
+
+                               //获取结果
+                               @Override
+                               public BigDecimal getResult(BigDecimal accumulator) {
+                                   return accumulator;
+                               }
+                           },
+                        //窗口数据聚合计算
+                        new ProcessWindowFunction<BigDecimal, OrderReport, Tuple, TimeWindow>() {
+                            private FastDateFormat format = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss");
+
+                            @Override
+                            public void process(Tuple tuple, Context context, Iterable<BigDecimal> elements,
+                                                Collector<OrderReport> out) throws Exception {
+                                //a.获取分组字段值
+                                Tuple1<String> tupleType = (Tuple1<String>) tuple;
+                                String type = tupleType.f0;
+                                //b.获取窗口开始时间和结束时间
+                                TimeWindow window = context.window();
+                                long start = window.getStart();
+                                long end = window.getEnd();
+                                String winStart = this.format.format(start);
+                                String winEnd = this.format.format(end);
+                                //c. 遍历窗口数据并做聚合累加
+                                double totalAmount = elements.iterator().next().doubleValue();
+                                //d. 封装字段为OrderReport对象，输出
+                                OrderReport orderReport = new OrderReport(winStart, winEnd, type, totalAmount);
+                                out.collect(orderReport);
+                            }
+                        }
+                );
+        return resultStream;
+    }
 
     /**
-     * 7.实时报表统计：每日重点城市销售额
-     *
-     * @param stream 清洗过后的数据流
-     * @return 返回一个二元组，包含统计类型和总金额
-     */
-
-
-    /**
-     * 8.自定义 Sink，将统计数据保存的 MySQL
+     * 7.自定义 Sink，将统计数据保存的 MySQL
      *
      * @param stream 需要保存的数据流
      * @param table  保存的目标表
-     * @param fields 需要保存的字段
      */
-    private static void jdbcSink(DataStream<Tuple2<String, BigDecimal>> stream, String table, String fields) {
+    private static void jdbcSink(DataStream<OrderReport> stream, String table) {
         //a. 构建Sink对象，设置属性
-        SinkFunction<Tuple2<String, BigDecimal>> jdbcSink = JdbcSink.sink("replace into db_flink." + table + "(" + fields + ") values (?, ?)",//
-                new JdbcStatementBuilder<Tuple2<String, BigDecimal>>() {
+        SinkFunction<OrderReport> sinkStream = JdbcSink.sink("REPLACE INTO db_flink." + table + " (window_start, window_end, global, amount) VALUES (?, ?, ?, ?)",
+                new JdbcStatementBuilder<OrderReport>() {
                     @Override
-                    public void accept(PreparedStatement pstat, Tuple2<String, BigDecimal> value) throws SQLException {
-                        pstat.setString(1, value.f0);
-                        pstat.setDouble(2, value.f1.doubleValue());
+                    public void accept(PreparedStatement pstmt, OrderReport report) throws SQLException {
+                        pstmt.setString(1, report.windowStart);
+                        pstmt.setString(2, report.windowEnd);
+                        pstmt.setString(3, report.typeName);
+                        pstmt.setDouble(4, report.totalAmt);
                     }
-                },//b. 设置批量写入时的参数值，批量大小，实时写入时设置为 1
-                new JdbcExecutionOptions.Builder()
-                        .withBatchSize(1)//每批次大小，默认是5000.
-                        .withBatchIntervalMs(0)//每批提交间隔
-                        .withMaxRetries(3)//失败最大重试次数
-                        .build(),//
+                },
+                //b. 设置批量写入时的参数值，批量大小，实时写入时设置为 1
+                JdbcExecutionOptions.builder()
+                        .withBatchIntervalMs(0)
+                        .withBatchSize(1)
+                        .withMaxRetries(3)
+                        .build(),
                 new JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
                         .withDriverName("com.mysql.jdbc.Driver")
                         .withUrl("jdbc:mysql://node3:3306/?useUnicode=true&characterEncoding=utf-8&useSSL=false")
                         .withUsername("root")
                         .withPassword("123456")
                         .build()
-        );
 
-        //c. 添加数据流到 Sink
-        stream.addSink(jdbcSink);
+        );
+        //添加 Sink
+        stream.addSink(sinkStream);
     }
 
-    //RUN AND DEBUG
+
+        //RUN AND DEBUG
     public static void main(String[] args) throws Exception {
         //1.准备环境-env,设置时间语义：事件时间
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -351,20 +430,18 @@ public class _07_02RealTimeDailyOrderReport {
         //3.处理数据-transformation
         //3.1 解析数据提前相关字段
         DataStream<OrderData> orderStream = streamETL(kafkaStream);
-        orderStream.printToErr();
-        //tupleStream.printToErr();
+
         //3.2 总销售额
-        //DataStream<OrderReport> globalStream = reportDailyGlobal(orderDataStream);
+        DataStream<OrderReport> globalStream = reportDailyIncrementmalGlobal(orderStream);
         //3.3 各省份销售额
-        // DataStream<Tuple2<String, BigDecimal>> provinceStream = reportProvince(tupleStream);
+
         //3.4 重点城市销售额
-        //DataStream<Tuple2<String, BigDecimal>> cityStream = reportCity(tupleStream);
+
 
         //4.输出结果-sink，保存到 MYSQL 数据库
+        jdbcSink(globalStream,"tbl_report_daily_global");
         //jdbcSink(globalStream, "tbl_report_global", "global, amount");
-        //jdbcSink(provinceStream, "tbl_report_province", "province, amount");
-        //jdbcSink(cityStream, "tbl_report_city", "city, amount");
-        //globalStream.printToErr();
+
 
         //5.触发执行-execute
         env.execute(_07_02RealTimeDailyOrderReport.class.getName());
