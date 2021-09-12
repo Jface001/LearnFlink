@@ -1,16 +1,15 @@
 package com.test.flink.order.report;
 
 import com.alibaba.fastjson.JSON;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
+import lombok.*;
+import org.apache.commons.lang3.time.FastDateFormat;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.java.tuple.Tuple;
+import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.jdbc.JdbcConnectionOptions;
 import org.apache.flink.connector.jdbc.JdbcExecutionOptions;
@@ -18,22 +17,30 @@ import org.apache.flink.connector.jdbc.JdbcSink;
 import org.apache.flink.connector.jdbc.JdbcStatementBuilder;
 import org.apache.flink.runtime.state.filesystem.FsStateBackend;
 import org.apache.flink.streaming.api.CheckpointingMode;
+import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
+import org.apache.flink.streaming.api.functions.timestamps.BoundedOutOfOrdernessTimestampExtractor;
+import org.apache.flink.streaming.api.functions.windowing.RichWindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.triggers.ContinuousProcessingTimeTrigger;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
+import org.apache.flink.util.Collector;
 import org.lionsoul.ip2region.DataBlock;
 import org.lionsoul.ip2region.DbConfig;
 import org.lionsoul.ip2region.DbSearcher;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
+import java.text.ParseException;
 import java.util.Properties;
 
 /**
@@ -49,17 +56,48 @@ public class _07_02RealTimeDailyOrderReport {
     /**
      * 1.自定义 JavaBean 对象，用于解析 JSON 字符串
      */
-    @Data
+    @Setter
+    @Getter
+    @EqualsAndHashCode
     @NoArgsConstructor
     @AllArgsConstructor
-    private static class OrderData {
+    public static class OrderData {
         String orderId;
         String userId;
         String orderTime;
         String ip;
         Double orderMoney;
         Integer orderStatus;
+        String province;
+        String city;
+        BigDecimal orderAmt;
+
+        @Override
+        public String toString() {
+            return orderId + "," + userId + "," + orderTime + "," + ip + "," + orderMoney + "," + orderStatus;
+        }
     }
+
+    /**
+     * 1.5 自定义 JavaBean 对象，用于存储消费 Kafka 之后返回的结果
+     */
+    @Setter
+    @Getter
+    @EqualsAndHashCode
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class OrderReport {
+        String windowStart;
+        String windowEnd;
+        String typeName;
+        Double totalAmt;
+
+        @Override
+        public String toString() {
+            return windowStart + "~" + windowEnd + ": " + typeName + " = " + totalAmt;
+        }
+    }
+
 
     /**
      * 2.定义一个方法，用于设置Checkpoint检查点属性，Flink Stream流式应用，
@@ -134,171 +172,135 @@ public class _07_02RealTimeDailyOrderReport {
      * 4.解析从Kafka消费获取的交易订单数据，过滤订单状态为0（打开）数据，并解析IP地址为省份和城市
      *
      * @param stream 输入的 kafka 数据源
-     * @return 返回一个三元组，省份，城市，总额
+     * @return 返回一个数据流
      */
-    private static DataStream<Tuple3<String, String, BigDecimal>> streamETL(DataStream<String> stream) {
-        SingleOutputStreamOperator<Tuple3<String, String, BigDecimal>> resultStream = stream
-                //a. 解析JSON数据，封装实体类对象
+    private static DataStream<OrderData> streamETL(DataStream<String> stream) {
+        SingleOutputStreamOperator<OrderData> orderStream = stream
+                //a. 解析 JSON 数据，封装实体类对象
                 .map(new RichMapFunction<String, OrderData>() {
                     @Override
                     public OrderData map(String value) throws Exception {
                         return JSON.parseObject(value, OrderData.class);
                     }
                 })
-                //b. 过滤订单状态为0的数据
+                //b. 过滤订单状态为 0 的数据
                 .filter(new RichFilterFunction<OrderData>() {
                     @Override
                     public boolean filter(OrderData order) throws Exception {
-                        return 0 == order.orderStatus;
+                        return 0 == order.getOrderStatus();
                     }
                 })
-                //c. 解析IP地址为省份和城市
-                .map(new RichMapFunction<OrderData, Tuple3<String, String, BigDecimal>>() {
-                    //定义变量，用于解析 IP 地址为省份和城市
+                //c. 解析 IP 为省份和城市
+                .map(new RichMapFunction<OrderData, OrderData>() {
+                    //定义变量
                     private DbSearcher dbSearcher = null;
 
-                    //初始化 dbSearcher 对象，用于解析IP 获取省份和城市
                     @Override
                     public void open(Configuration parameters) throws Exception {
                         dbSearcher = new DbSearcher(new DbConfig(), "dataset/ip2region.db");
                     }
 
                     @Override
-                    public Tuple3<String, String, BigDecimal> map(OrderData order) throws Exception {
-                        // 获取 ip
-                        String ipValue = order.ip;
-                        // 解析 ip ，获取省份和城市
-                        DataBlock dataBlock = dbSearcher.btreeSearch(ipValue);
+                    public OrderData map(OrderData order) throws Exception {
+                        //获取 IP
+                        String ip = order.getIp();
+                        //解析 IP，获取省份和城市
+                        DataBlock dataBlock = dbSearcher.btreeSearch(ip);
                         String[] arr = dataBlock.getRegion().split("\\|");
-                        String province = arr[2];
-                        String city = arr[3];
-                        // 获取订单金额并转换 BigDecimal 数据类型，方便累加计算，防止精度损失
-                        Double orderMoney = order.orderMoney;
-                        BigDecimal money = new BigDecimal(orderMoney).setScale(2, BigDecimal.ROUND_HALF_UP);
-                        return Tuple3.of(province, city, money);
+                        order.setProvince(arr[2]);
+                        order.setCity(arr[3]);
+                        //获取订单金额,转换为 BigDecimal 类型
+                        Double orderMoney = order.getOrderMoney();
+                        BigDecimal total = new BigDecimal(orderMoney).setScale(2, RoundingMode.HALF_UP);
+                        order.setOrderAmt(total);
+                        //d. 返回实体类对象 order
+                        return order;
                     }
                 });
-
-        //返回消费后的结果流
-        return resultStream;
+        //返回数据流
+        return orderStream;
     }
 
-    ;
-
     /**
-     * 5.实时报表统计：总销售额
+     * 5.实时报表统计：每日总销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
      */
-    private static DataStream<Tuple2<String, BigDecimal>> reportGlobal(DataStream<Tuple3<String, String, BigDecimal>> stream) {
-        SingleOutputStreamOperator<Tuple2<String, BigDecimal>> resultStream = stream
-                //a. 提取字段，增加一个字段：全国
-                .map(new RichMapFunction<Tuple3<String, String, BigDecimal>, Tuple2<String, BigDecimal>>() {
+    private static DataStream<OrderReport> reportDailyGlobal(DataStream<OrderData> stream) {
+        //a. 设置事件时间字段，类型为 Long，允许最大乱序时间为 2 秒
+        SingleOutputStreamOperator<OrderReport> resultStream = stream.assignTimestampsAndWatermarks(
+                new BoundedOutOfOrdernessTimestampExtractor<OrderData>(Time.seconds(2)) {
+                    private FastDateFormat format = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss.SSS");
+
                     @Override
-                    public Tuple2<String, BigDecimal> map(Tuple3<String, String, BigDecimal> value) throws Exception {
-                        return Tuple2.of("全国", value.f2);
+                    public long extractTimestamp(OrderData order) {
+                        String orderTime = order.getOrderTime();
+                        Long timeStamp = System.currentTimeMillis();
+                        try {
+                            timeStamp = format.parse(orderTime).getTime();
+                        } catch (ParseException e) {
+                            e.printStackTrace();
+                        }
+                        return timeStamp;
+                    }
+                }
+        )
+                //b. 提前字段：订单金额和添加字段：全国,二元组
+                .map(new RichMapFunction<OrderData, Tuple2<String, BigDecimal>>() {
+                    @Override
+                    public Tuple2<String, BigDecimal> map(OrderData order) throws Exception {
+                        BigDecimal orderAmt = order.getOrderAmt();
+                        return Tuple2.of("全国", orderAmt);
                     }
                 })
-                //b. 按照全国分组
+                //c. 分组，设置窗口、触发器，做聚合
                 .keyBy(0)
-                //c. 组内数据求和，Decimal 类型 不能使用 sum
-                .reduce(new RichReduceFunction<Tuple2<String, BigDecimal>>() {
+                .window(TumblingEventTimeWindows.of(Time.days(1), Time.hours(-8)))
+                .trigger(ContinuousProcessingTimeTrigger.of(Time.seconds(1)))
+                .apply(new RichWindowFunction<Tuple2<String, BigDecimal>, OrderReport, Tuple, TimeWindow>() {
+                    FastDateFormat format = FastDateFormat.getInstance("yyyy-MM-dd HH:mm:ss");
+
                     @Override
-                    public Tuple2<String, BigDecimal> reduce(Tuple2<String, BigDecimal> temp, Tuple2<String, BigDecimal> item) throws Exception {
-                        String key = temp.f0;
-                        BigDecimal total = temp.f1.add(item.f1);
-                        return Tuple2.of(key, total);
+                    public void apply(Tuple tuple, TimeWindow window, Iterable<Tuple2<String, BigDecimal>> input, Collector<OrderReport> out) throws Exception {
+                        //a. 获取分组字段
+                        Tuple1<String> tupleType = (Tuple1<String>) tuple;
+                        String type = tupleType.f0;
+                        //b. 获取窗口大小，开始时间和结束时间
+                        long start = window.getStart();
+                        long end = window.getEnd();
+                        String winStart = this.format.format(start);
+                        String winEnd = this.format.format(start);
+                        //c. 遍历窗口数据进行累加
+                        BigDecimal total = new BigDecimal(0.0).setScale(2, BigDecimal.ROUND_HALF_UP);
+                        for (Tuple2<String, BigDecimal> item : input) {
+                            total.add(item.f1);
+                        }
+                        double totalMount = total.doubleValue();
+                        //d. 封装成 OrderReport 对象输出
+                        OrderReport orderReport = new OrderReport(winStart, winEnd, type, totalMount);
+                        out.collect(orderReport);
                     }
                 });
-        //d. 返回最新销售额
         return resultStream;
     }
 
+
     /**
-     * 6.实时报表统计：各省份销售额
+     * 6.实时报表统计：每日各省份销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
      */
-    private static DataStream<Tuple2<String, BigDecimal>> reportProvince(DataStream<Tuple3<String, String, BigDecimal>> stream) {
-        SingleOutputStreamOperator<Tuple2<String, BigDecimal>> resultStream = stream
-                //a. 提取字段
-                .map(new RichMapFunction<Tuple3<String, String, BigDecimal>, Tuple2<String, BigDecimal>>() {
-                    @Override
-                    public Tuple2<String, BigDecimal> map(Tuple3<String, String, BigDecimal> value) throws Exception {
-                        return Tuple2.of(value.f0, value.f2);
-                    }
-                })
-                //b. 按照省份分组
-                .keyBy(0)
-                //c. 组内数据求和，Decimal 类型 不能使用 sum
-                .reduce(new RichReduceFunction<Tuple2<String, BigDecimal>>() {
-                    @Override
-                    public Tuple2<String, BigDecimal> reduce(Tuple2<String, BigDecimal> temp, Tuple2<String, BigDecimal> item) throws Exception {
-                        String key = temp.f0;
-                        BigDecimal total = temp.f1.add(item.f1);
-                        return Tuple2.of(key, total);
-                    }
-                });
-        //d. 返回最新销售额
-        return resultStream;
-    }
 
-    ;
 
     /**
-     * 7.实时报表统计：重点城市销售额
+     * 7.实时报表统计：每日重点城市销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
      */
-    private static DataStream<Tuple2<String, BigDecimal>> reportCity(DataStream<Tuple3<String, String, BigDecimal>> stream) {
 
-        List<String> cityList = new ArrayList<String>();
-        cityList.add("北京市");
-        cityList.add("上海市");
-        cityList.add("深圳市");
-        cityList.add("广州市");
-        cityList.add("杭州市");
-        cityList.add("成都市");
-        cityList.add("南京市");
-        cityList.add("武汉市");
-        cityList.add("西安市");
-        SingleOutputStreamOperator<Tuple2<String, BigDecimal>> resultStream =
-                stream
-                        //过滤，只提取重点城市
-                        .filter(new RichFilterFunction<Tuple3<String, String, BigDecimal>>() {
-                            @Override
-                            public boolean filter(Tuple3<String, String, BigDecimal> value) throws Exception {
-                                return cityList.contains(value.f1);
-                            }
-                        })
-                        //a. 提取字段
-                        .map(new RichMapFunction<Tuple3<String, String, BigDecimal>, Tuple2<String, BigDecimal>>() {
-                            @Override
-                            public Tuple2<String, BigDecimal> map(Tuple3<String, String, BigDecimal> value) throws Exception {
-                                return Tuple2.of(value.f1, value.f2);
-                            }
-                        })
-                        //b. 按照城市分组
-                        .keyBy(0)
-                        //c. 组内数据求和，Decimal 类型 不能使用 sum
-                        .reduce(new RichReduceFunction<Tuple2<String, BigDecimal>>() {
-                            @Override
-                            public Tuple2<String, BigDecimal> reduce(Tuple2<String, BigDecimal> temp, Tuple2<String, BigDecimal> item) throws Exception {
-                                String key = temp.f0;
-                                BigDecimal total = temp.f1.add(item.f1);
-                                return Tuple2.of(key, total);
-                            }
-                        });
-        //d. 返回最新销售额
-        return resultStream;
-
-
-    }
-
-    ;
 
     /**
      * 8.自定义 Sink，将统计数据保存的 MySQL
@@ -336,10 +338,11 @@ public class _07_02RealTimeDailyOrderReport {
 
     //RUN AND DEBUG
     public static void main(String[] args) throws Exception {
-        //1.准备环境-env,设置 Checkpoint 属性
+        //1.准备环境-env,设置时间语义：事件时间
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(3);
-        setEnvCheckPoint(env);
+        env.setStreamTimeCharacteristic(TimeCharacteristic.EventTime);
+
 
         //2.准备数据-source，从 kafka 加载数据
         DataStream<String> kafkaStream = kafkaSource(env, "orderTopic");
@@ -347,22 +350,21 @@ public class _07_02RealTimeDailyOrderReport {
 
         //3.处理数据-transformation
         //3.1 解析数据提前相关字段
-        DataStream<Tuple3<String, String, BigDecimal>> tupleStream = streamETL(kafkaStream);
+        DataStream<OrderData> orderStream = streamETL(kafkaStream);
+        orderStream.printToErr();
         //tupleStream.printToErr();
         //3.2 总销售额
-        DataStream<Tuple2<String, BigDecimal>> globalStream = reportGlobal(tupleStream);
+        //DataStream<OrderReport> globalStream = reportDailyGlobal(orderDataStream);
         //3.3 各省份销售额
-        DataStream<Tuple2<String, BigDecimal>> provinceStream = reportProvince(tupleStream);
+        // DataStream<Tuple2<String, BigDecimal>> provinceStream = reportProvince(tupleStream);
         //3.4 重点城市销售额
-        DataStream<Tuple2<String, BigDecimal>> cityStream = reportCity(tupleStream);
+        //DataStream<Tuple2<String, BigDecimal>> cityStream = reportCity(tupleStream);
 
         //4.输出结果-sink，保存到 MYSQL 数据库
+        //jdbcSink(globalStream, "tbl_report_global", "global, amount");
+        //jdbcSink(provinceStream, "tbl_report_province", "province, amount");
+        //jdbcSink(cityStream, "tbl_report_city", "city, amount");
         //globalStream.printToErr();
-        //provinceStream.printToErr();
-        //cityStream.printToErr();
-        jdbcSink(globalStream, "tbl_report_global", "global, amount");
-        jdbcSink(provinceStream, "tbl_report_province", "province, amount");
-        jdbcSink(cityStream, "tbl_report_city", "city, amount");
 
         //5.触发执行-execute
         env.execute(_07_02RealTimeDailyOrderReport.class.getName());
