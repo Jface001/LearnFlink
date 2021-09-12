@@ -187,7 +187,7 @@ public class _07RealTimeOrderReport {
     ;
 
     /**
-     * 5.实时报表统计：总销售额
+     * 5.实时报表统计：每日总销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
@@ -217,7 +217,7 @@ public class _07RealTimeOrderReport {
     }
 
     /**
-     * 6.实时报表统计：各省份销售额
+     * 6.实时报表统计：每日各省份销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
@@ -249,7 +249,7 @@ public class _07RealTimeOrderReport {
     ;
 
     /**
-     * 7.实时报表统计：重点城市销售额
+     * 7.实时报表统计：每日重点城市销售额
      *
      * @param stream 清洗过后的数据流
      * @return 返回一个二元组，包含统计类型和总金额
