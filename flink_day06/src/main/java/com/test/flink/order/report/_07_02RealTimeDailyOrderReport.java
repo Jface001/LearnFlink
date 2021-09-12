@@ -9,7 +9,6 @@ import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.configuration.Configuration;
@@ -46,7 +45,7 @@ import java.util.Properties;
  * - 第三、重点城市销售额：city
  * "北京市", "上海市", "深圳市", "广州市", "杭州市", "成都市", "南京市", "武汉市", "西安市"
  */
-public class _07RealTimeOrderReport {
+public class _07_02RealTimeDailyOrderReport {
     /**
      * 1.自定义 JavaBean 对象，用于解析 JSON 字符串
      */
@@ -366,7 +365,7 @@ public class _07RealTimeOrderReport {
         jdbcSink(cityStream, "tbl_report_city", "city, amount");
 
         //5.触发执行-execute
-        env.execute(_07RealTimeOrderReport.class.getName());
+        env.execute(_07_02RealTimeDailyOrderReport.class.getName());
 
     }
 
