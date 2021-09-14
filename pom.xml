@@ -14,6 +14,7 @@
         <module>flink_day03</module>
         <module>flink_day04</module>
         <module>flink_day06</module>
+        <module>flink_day05</module>
     </modules>
 
     <properties>
