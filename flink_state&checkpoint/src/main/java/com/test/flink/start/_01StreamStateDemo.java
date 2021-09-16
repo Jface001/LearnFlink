@@ -20,7 +20,7 @@ public class _01StreamStateDemo {
         env.setParallelism(2);
 
         // 2. 数据源-source
-        DataStream<String> inputStream = env.socketTextStream("node1.itcast.cn", 9999);
+        DataStream<String> inputStream = env.socketTextStream("node1", 9999);
         env.fromElements("spark flink flink") ;
 
 
