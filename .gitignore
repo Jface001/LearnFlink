@@ -1,6 +1,6 @@
 # Project exclude paths
-/flink_day01/target/
-/flink_day02/target/
-/flink_day03/target/
-/flink_day04/target/
-/flink_day06/target/
+/flink_DataSet/target/
+/flink_DataStream/target/
+/flink_start/target/
+/flink_tableAPIAndSQL/target/
+/flink_eventtimeAndwindow/target/
