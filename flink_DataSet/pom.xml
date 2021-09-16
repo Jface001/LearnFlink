@@ -9,7 +9,7 @@
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
-    <artifactId>flink_day02</artifactId>
+    <artifactId>flink_DataSet</artifactId>
 
     <repositories>
         <repository>
@@ -195,7 +195,7 @@
                                         implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <!-- 可以设置jar包的入口类(可选) -->
                                     <!--
-                                    <mainClass>com.itcast.flink.batch.FlinkBatchWordCount</mainClass>
+                                    <mainClass>com.test.flink.batch.FlinkBatchWordCount</mainClass>
                                     -->
                                 </transformer>
                             </transformers>

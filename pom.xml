@@ -9,12 +9,12 @@
     <packaging>pom</packaging>
     <version>1.0</version>
     <modules>
+        <module>flink_start</module>
         <module>flink_DataSet</module>
         <module>flink_DataStream</module>
-        <module>flink_start</module>
-        <module>flink_eventtime&amp;window</module>
-        <module>flink_state&amp;checkpoint</module>
-        <module>flink_tableAPI&amp;SQL</module>
+        <module>flink_eventtimeAndwindow</module>
+        <module>flink_stateAndCheckpoint</module>
+        <module>flink_tableAPIAndSQL</module>
     </modules>
 
     <properties>
