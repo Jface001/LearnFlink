@@ -58,8 +58,8 @@ public class _17StreamSinkFileDemo {
 		// 4. 数据终端-sink
 		// 创建FileSink对象，进行设置相关属性
 		StreamingFileSink<String> sink = StreamingFileSink
-			// 4-1. 设置问价存储格式，使用行式存储
-			.forRowFormat(new Path("datas/file-sink"), new SimpleStringEncoder<String>())
+			// 4-1. 设置文件存储格式，使用行式存储
+			.forRowFormat(new Path("datas/file-sink"), new SimpleStringEncoder<String>("utf-8"))
 			// 4-2. 设置滚动策略
 			.withRollingPolicy(
 				DefaultRollingPolicy.builder()
