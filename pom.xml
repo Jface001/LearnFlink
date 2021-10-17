@@ -15,6 +15,7 @@
         <module>flink_eventtimeAndwindow</module>
         <module>flink_stateAndCheckpoint</module>
         <module>flink_tableAPIAndSQL</module>
+        <module>flink_scala</module>
     </modules>
 
     <properties>

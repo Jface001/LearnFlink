@@ -1,4 +1,4 @@
-package com.test.flink.start;
+package com.test.datastream;
 
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.FlatMapFunction;
@@ -10,14 +10,12 @@ import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.Collector;
 
-import java.util.stream.Stream;
-
 /**
  * @Author: Jface
- * @Date: 2021/9/7 17:19
- * @Desc: 基于 Flink 流计算引擎：从TCP Socket消费数据，实时词频统计WordCount
+ * @Date: 2021/10/17 17:48
+ * @Desc: 于 Flink 流计算引擎：从TCP Socket消费数据，实时词频统计WordCount
  */
-public class _01StreamWordCount {
+public class _02WordCount {
     public static void main(String[] args) throws Exception {
         //1.准备环境-env
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -64,7 +62,6 @@ public class _01StreamWordCount {
         //4.输出结果-sink
         resultDataStream.printToErr();
         //5.触发执行-execute,流式计算都需要触发
-        env.execute(_01StreamWordCount.class.getName());
-
+        env.execute(_02WordCount.class.getName());
     }
 }
