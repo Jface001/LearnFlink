@@ -18,7 +18,7 @@ public class StreamWordcount {
          //1.准备环境-env
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
          //2.准备数据-source
-        DataStreamSource<String> inputDataStream = env.socketTextStream("192.168.88.161", 9999);
+        DataStreamSource<String> inputDataStream = env.socketTextStream("192.168.1.102", 9999);
         //3.处理数据-transformation
         //TODO: 切割成单个单词 flatmap
         SingleOutputStreamOperator<Tuple2<String, Integer>> resultDataSet = inputDataStream.flatMap(new FlatMapFunction<String, String>() {
