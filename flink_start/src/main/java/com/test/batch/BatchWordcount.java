@@ -42,7 +42,7 @@ public class BatchWordcount {
         //TODO: 3.3 对每个元素做分组并统计
         AggregateOperator<Tuple2<String, Integer>> resultDateSet = tupleDataSet.groupBy(0).sum(1);
         // 4.输出结果-sink
-        resultDateSet.print();
+        resultDateSet.printToErr();
         //5.触发执行-execute,批处理不需要触发执行
 
 
